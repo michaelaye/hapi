@@ -1,5 +1,8 @@
 # hapi
 
+> DISCLAIMER: I only created this package out of the hapi.py modue file from hitran.org and did not participate in the writing of the physical code inside it. I only put together the installer scripts.
+
+
 This is the hitran.org Python API for the HITRAN database.
 This software can be downloaded at http://hitran.org/hapi/
 
