@@ -29,10 +29,18 @@ from numpy import sqrt,abs,exp,pi,log,sin,cos
 from numpy import convolve
 #from numpy import linspace
 from numpy import any,minimum,maximum
+from numpy import modf
+from numpy import sort as npsort
 from bisect import bisect
 #from collections import OrderedDict
 from warnings import warn
+from urllib2 import HTTPError,URLError
 import pydoc
+
+HAPI_VERSION = '1.0'
+
+# version header
+print('HAPI VERSION: %s' % HAPI_VERSION)
 
 # define precision
 __ComplexType__ = complex128
@@ -61,7 +69,7 @@ def frange(x,y,step):
 
 # declare global variables
 
-GLOBAL_DEBUG = True
+GLOBAL_DEBUG = False
 GLOBAL_CURRENT_DIR ='.'
 
 GLOBAL_HITRAN_APIKEY = 'e20e4bd3-e12c-4931-99e0-4c06e88536bd'
@@ -76,10 +84,13 @@ LOCAL_HOST = 'localhost'
 
 # DEBUG switch
 if GLOBAL_DEBUG:
-   GLOBAL_HOST = 'hitran.cloudapp.net:8000' # localhost
+   GLOBAL_HOST = LOCAL_HOST+':8000' # localhost
 else:
-   GLOBAL_HOST = 'hitran.cloudapp.net' # localhost
+   GLOBAL_HOST = 'http://hitran.org'
 
+# this is a backup url in the case GLOBAL_HOST does not work
+GLOBAL_HOST_BACKUP = 'http://hitranazure.cloudapp.net/'
+   
 # interface for checking of variable's existance   
 def empty(Instance):
     return True if Instance else False
@@ -380,7 +391,8 @@ def checkPrivileges(Path,UserName=GLOBAL_USER,Requisites=GLOBAL_REQUISITES,
 # Use a directory as a database. Each table is stored in a 
 # separate text file. Parameters in text are position-fixed.
 
-BACKEND_DATABASE_NAME_DEFAULT = 'data'
+#BACKEND_DATABASE_NAME_DEFAULT = 'data'
+BACKEND_DATABASE_NAME_DEFAULT = '.'
 
 VARIABLES = {}
 VARIABLES['BACKEND_DATABASE_NAME'] = BACKEND_DATABASE_NAME_DEFAULT
@@ -1107,7 +1119,8 @@ def operationSET(arg):
 
 def operationMATCH(arg1,arg2):
     # Match regex (arg1) and string (arg2)
-    return bool(re.match(arg1,arg2))
+    #return bool(re.match(arg1,arg2)) # works wrong
+    return bool(re.search(arg1,arg2))
 
 def operationSEARCH(arg1,arg2):
     # Search regex (arg1) in string (arg2)
@@ -1833,6 +1846,9 @@ def select(TableName,DestinationTableName=QUERY_BUFFER,ParameterNames=None,Condi
     ---
     """
     # TODO: Variables defined in ParameterNames ('LET') MUST BE VISIBLE IN Conditions !!
+    # check if table exists
+    if TableName not in LOCAL_TABLE_CACHE.keys():
+        raise Exception('%s: no such table. Check tableList() for more info.' % TableName)
     if not ParameterNames: ParameterNames=LOCAL_TABLE_CACHE[TableName]['header']['order']
     LOCAL_TABLE_CACHE[DestinationTableName] = {} # clear QUERY_BUFFER for the new result
     RowObjectDefault = getDefaultRowObject(TableName)
@@ -2276,9 +2292,6 @@ def splitColumn(TableName,SourceParameterName,ParameterNames,Splitter):
 # --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
 
-GLOBAL_HOST_URL = 'http://hitranazure.cloudapp.net'
-LOCAL_HOST_URL = 'http://hitran-local'
-
 def queryHITRAN(TableName,iso_id_list,numin,numax):
     #import httplib
     #conn = httplib.HTTPConnection('hitranazure.cloudapp.com')
@@ -2306,12 +2319,18 @@ def queryHITRAN(TableName,iso_id_list,numin,numax):
     #'numax=' + str(numax) + '&' + \
     #'access=api' + '&' + \
     #'key=' + GLOBAL_HITRAN_APIKEY
-    url = GLOBAL_HOST_URL + '/lbl/api?' + \
+    url = GLOBAL_HOST + '/lbl/api?' + \
     'iso_ids_list=' + iso_id_list_str + '&' + \
     'numin=' + str(numin) + '&' + \
     'numax=' + str(numax)
+    #print('url=',url)  # DEBUG
     # More efficient way: download by chunks
-    req = urllib2.urlopen(url)
+    try:
+        req = urllib2.urlopen(url)
+    except HTTPError:
+        raise Exception('Failed to retrieve data for given parameters.')
+    except URLError:
+        raise Exception('Cannot connect to %s. Try again or edit GLOBAL_HOST variable.' % GLOBAL_HOST)
     #CHUNK = 16 * 1024 # default value
     CHUNK = 64 * 1024
     print 'BEGIN DOWNLOAD: '+TableName
@@ -5404,7 +5423,10 @@ TIPS_ISO_HASH[(M,I)] = float32([0.12066E+03, 0.17085E+03, 0.22116E+03,
       0.24533E+06, 0.25390E+06, 0.26271E+06, 0.27177E+06, 0.28108E+06,
       0.29064E+06])
 
-
+#  --------------- CO2 838: M = 2, I = 0 ALIAS-----------------
+TIPS_GSI_HASH[(M,0)] = __FloatType__(2.)
+TIPS_ISO_HASH[(M,0)] = TIPS_ISO_HASH[(M,I)]
+      
 #  --------------- CO2 837: M = 2, I = 11 ---------------------
 M = 2
 I = 11
@@ -9053,14 +9075,18 @@ def BD_TIPS_2011_PYTHON(M,I,T):
 
     # out of temperature range
     if T<70. or T>3000.:
-        Qt = -1.
-        gi = 0.
-        return gi,Qt
+        #Qt = -1.
+        #gi = 0.
+        #return gi,Qt
+        raise Exception('TIPS: T must be between 70K and 3000K.')
     
-    # get statistical weight for specified isotopologue
-    gi = TIPS_GSI_HASH[(M,I)]
-    # interpolate partition sum for specified isotopologue
-    Qt = AtoB(T,Tdat,TIPS_ISO_HASH[(M,I)],TIPS_NPT)
+    try:
+        # get statistical weight for specified isotopologue
+        gi = TIPS_GSI_HASH[(M,I)]
+        # interpolate partition sum for specified isotopologue
+        Qt = AtoB(T,Tdat,TIPS_ISO_HASH[(M,I)],TIPS_NPT)
+    except KeyError:
+        raise Exception('TIPS: no data for M,I = %d,%d.' % (M,I))
     
     return gi,Qt
 
@@ -9798,7 +9824,7 @@ def listOfTuples(a):
 
 # determine default parameters from those which are passed to absorptionCoefficient_...
 def getDefaultValuesForXsect(Components,SourceTables,Environment,OmegaRange,
-                             OmegaStep,OmegaWing,IntensityThreshold):
+                             OmegaStep,OmegaWing,IntensityThreshold,Format):
     if SourceTables[0] == None:
         SourceTables = ['__BUFFER__',]
     if Environment == None:
@@ -9806,6 +9832,9 @@ def getDefaultValuesForXsect(Components,SourceTables,Environment,OmegaRange,
     if Components == [None]:
         CompDict = {}
         for TableName in SourceTables:
+            # check table existance
+            if TableName not in LOCAL_TABLE_CACHE.keys():
+                raise Exception('%s: no such table. Check tableList() for more info.' % TableName)
             mol_ids = LOCAL_TABLE_CACHE[TableName]['data']['molec_id']
             iso_ids = LOCAL_TABLE_CACHE[TableName]['data']['local_iso_id']
             if len(mol_ids) != len(iso_ids):
@@ -9834,8 +9863,16 @@ def getDefaultValuesForXsect(Components,SourceTables,Environment,OmegaRange,
     if OmegaWing == None:
         #OmegaWing = OmegaDelta/10.
         OmegaWing = 0.0 # cm-1
+    if not Format:
+        Infinitesimal = 1e-14 # put this to header in next version!
+        min_number_of_digits = 4 # minimal number of digits after dec. pnt.
+        last_digit_pos = 0
+        while modf(OmegaStep * 10**last_digit_pos)[0] > Infinitesimal:
+            last_digit_pos += 1
+        actual_number_of_digits = max(min_number_of_digits,last_digit_pos)
+        Format = '%%.%df %%e' % actual_number_of_digits
     return Components,SourceTables,Environment,OmegaRange,\
-           OmegaStep,OmegaWing,IntensityThreshold
+           OmegaStep,OmegaWing,IntensityThreshold,Format
 
 
 # save numpy arrays to file
@@ -9857,8 +9894,8 @@ def absorptionCoefficient_HT(Components=None,SourceTables=None,partitionFunction
                              OmegaWingHW=DefaultOmegaWingHW,
                              ParameterBindings=DefaultParameterBindings,
                              EnvironmentDependencyBindings=DefaultEnvironmentDependencyBindings,
-                             GammaL='gamma_air', HITRAN_units=True,
-                             File=None, Format='%e %e'):
+                             GammaL='gamma_air', HITRAN_units=True, LineShift=True,
+                             File=None, Format=None, OmegaGrid=None):
     """
     INPUT PARAMETERS: 
         Components:  list of tuples [(M,I,D)], where
@@ -9879,7 +9916,7 @@ def absorptionCoefficient_HT(Components=None,SourceTables=None,partitionFunction
         GammaL:  specifies broadening parameter ('gamma_air' or 'gamma_self')
         HITRAN_units:  use cm2/molecule (True) or cm-1 (False) for absorption coefficient
         File:   write output to file (if specified)
-        Format:  c format of file output ('%e %e' by default)
+        Format:  c-format of file output (accounts significant digits in OmegaStep)
     OUTPUT PARAMETERS: 
         Omegas: wavenumber grid with respect to parameters OmegaRange and OmegaStep
         Xsect: absorption coefficient calculated on the grid. 
@@ -9909,14 +9946,18 @@ def absorptionCoefficient_HT(Components=None,SourceTables=None,partitionFunction
     SourceTables = listOfTuples(SourceTables)
     
     # determine final input values
-    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,IntensityThreshold = \
+    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,\
+    IntensityThreshold,Format = \
        getDefaultValuesForXsect(Components,SourceTables,Environment,OmegaRange,
-                                OmegaStep,OmegaWing,IntensityThreshold)
+                                OmegaStep,OmegaWing,IntensityThreshold,Format)
     
     # get uniform linespace for cross-section
     #number_of_points = (OmegaRange[1]-OmegaRange[0])/OmegaStep + 1
     #Omegas = linspace(OmegaRange[0],OmegaRange[1],number_of_points)
-    Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
+    if OmegaGrid is not None:
+        Omegas = npsort(OmegaGrid)
+    else:
+        Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
     number_of_points = len(Omegas)
     Xsect = zeros(number_of_points)
        
@@ -9937,7 +9978,10 @@ def absorptionCoefficient_HT(Components=None,SourceTables=None,partitionFunction
         if len(Component) >= 3:
             ni = Component[2]
         else:
-            ni = ISO[(M,I)][ISO_INDEX['abundance']]
+            try:
+                ni = ISO[(M,I)][ISO_INDEX['abundance']]
+            except KeyError:
+                raise Exception('cannot find component M,I = %d,%d.' % (M,I))
         ABUNDANCES[(M,I)] = ni
         NATURAL_ABUNDANCES[(M,I)] = ISO[(M,I)][ISO_INDEX['abundance']]
         
@@ -9971,9 +10015,15 @@ def absorptionCoefficient_HT(Components=None,SourceTables=None,partitionFunction
                 Gamma2DB = LOCAL_TABLE_CACHE[TableName]['data']['gamma2'][RowID]
             except:
                 Gamma2DB = 0
-            Shift0DB = LOCAL_TABLE_CACHE[TableName]['data']['delta_air'][RowID]
+            if LineShift:
+                Shift0DB = LOCAL_TABLE_CACHE[TableName]['data']['delta_air'][RowID]
+            else:
+                Shift0DB = 0
             try:
-                Shift2DB = LOCAL_TABLE_CACHE[TableName]['data']['shift2'][RowID]
+                if LineShift:
+                    Shift2DB = LOCAL_TABLE_CACHE[TableName]['data']['shift2'][RowID]
+                else:
+                    Shift2DB = 0
             except:
                 Shift2DB = 0
             try:
@@ -10004,9 +10054,15 @@ def absorptionCoefficient_HT(Components=None,SourceTables=None,partitionFunction
             if LineIntensity < IntensityThreshold: continue
             
             #   doppler broadening coefficient (GammaD)
-            GammaDDB = cSqrtLn2*LineCenterDB/cc*sqrt(2*cBolts*T/molecularMass(MoleculeNumberDB,IsoNumberDB))
-            GammaD = EnvironmentDependency_GammaD(GammaDDB,T,Tref)
-            
+            # V1 >>>
+            #GammaDDB = cSqrtLn2*LineCenterDB/cc*sqrt(2*cBolts*T/molecularMass(MoleculeNumberDB,IsoNumberDB))
+            #GammaD = EnvironmentDependency_GammaD(GammaDDB,T,Tref)
+            # V2 >>>
+            cMassMol = 1.66053873e-27 # hapi
+            #cMassMol = 1.6605402e-27 # converter
+            m = molecularMass(MoleculeNumberDB,IsoNumberDB) * cMassMol * 1000
+            GammaD = sqrt(2*cBolts*T*log(2)/m/cc**2)*LineCenterDB
+
             #   lorentz broadening coefficient
             Gamma0 = EnvironmentDependency_Gamma0(Gamma0DB,T,Tref,p,pref,TempRatioPowerDB)
             
@@ -10024,7 +10080,7 @@ def absorptionCoefficient_HT(Components=None,SourceTables=None,partitionFunction
 
             #   get final wing of the line according to Gamma0, OmegaWingHW and OmegaWing
             # XXX min or max?
-            OmegaWingF = max(OmegaWing,OmegaWingHW*Gamma0)
+            OmegaWingF = max(OmegaWing,OmegaWingHW*Gamma0,OmegaWingHW*GammaD)
                        
             #PROFILE_VOIGT(sg0,GamD,Gam0,sg)
             #      sg0           : Unperturbed line position in cm-1 (Input).
@@ -10052,8 +10108,8 @@ def absorptionCoefficient_Voigt(Components=None,SourceTables=None,partitionFunct
                                 OmegaWingHW=DefaultOmegaWingHW,
                                 ParameterBindings=DefaultParameterBindings,
                                 EnvironmentDependencyBindings=DefaultEnvironmentDependencyBindings,
-                                GammaL='gamma_air', HITRAN_units=True,
-                                File=None, Format='%e %e'):   
+                                GammaL='gamma_air', HITRAN_units=True, LineShift=True,
+                                File=None, Format=None, OmegaGrid=None):   
     """
     INPUT PARAMETERS: 
         Components:  list of tuples [(M,I,D)], where
@@ -10074,7 +10130,7 @@ def absorptionCoefficient_Voigt(Components=None,SourceTables=None,partitionFunct
         GammaL:  specifies broadening parameter ('gamma_air' or 'gamma_self')
         HITRAN_units:  use cm2/molecule (True) or cm-1 (False) for absorption coefficient
         File:   write output to file (if specified)
-        Format:  c format of file output ('%e %e' by default)
+        Format:  c-format of file output (accounts significant digits in OmegaStep)
     OUTPUT PARAMETERS: 
         Omegas: wavenumber grid with respect to parameters OmegaRange and OmegaStep
         Xsect: absorption coefficient calculated on the grid
@@ -10103,14 +10159,18 @@ def absorptionCoefficient_Voigt(Components=None,SourceTables=None,partitionFunct
     SourceTables = listOfTuples(SourceTables)
     
     # determine final input values
-    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,IntensityThreshold = \
+    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,\
+    IntensityThreshold,Format = \
        getDefaultValuesForXsect(Components,SourceTables,Environment,OmegaRange,
-                                OmegaStep,OmegaWing,IntensityThreshold)
+                                OmegaStep,OmegaWing,IntensityThreshold,Format)
     
     # get uniform linespace for cross-section
     #number_of_points = (OmegaRange[1]-OmegaRange[0])/OmegaStep + 1
     #Omegas = linspace(OmegaRange[0],OmegaRange[1],number_of_points)
-    Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
+    if OmegaGrid is not None:
+        Omegas = npsort(OmegaGrid)
+    else:
+        Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
     number_of_points = len(Omegas)
     Xsect = zeros(number_of_points)
        
@@ -10131,7 +10191,10 @@ def absorptionCoefficient_Voigt(Components=None,SourceTables=None,partitionFunct
         if len(Component) >= 3:
             ni = Component[2]
         else:
-            ni = ISO[(M,I)][ISO_INDEX['abundance']]
+            try:
+                ni = ISO[(M,I)][ISO_INDEX['abundance']]
+            except KeyError:
+                raise Exception('cannot find component M,I = %d,%d.' % (M,I))
         ABUNDANCES[(M,I)] = ni
         NATURAL_ABUNDANCES[(M,I)] = ISO[(M,I)][ISO_INDEX['abundance']]
         
@@ -10161,6 +10224,10 @@ def absorptionCoefficient_Voigt(Components=None,SourceTables=None,partitionFunct
             Gamma0DB = LOCAL_TABLE_CACHE[TableName]['data'][GammaL][RowID]
             TempRatioPowerDB = LOCAL_TABLE_CACHE[TableName]['data']['n_air'][RowID]
             #TempRatioPowerDB = 1.0 # for planar molecules
+            if LineShift:
+                Shift0DB = LOCAL_TABLE_CACHE[TableName]['data']['delta_air'][RowID]
+            else:
+                Shift0DB = 0
             
             # filter by molecule and isotopologue
             if (MoleculeNumberDB,IsoNumberDB) not in ABUNDANCES: continue
@@ -10181,16 +10248,25 @@ def absorptionCoefficient_Voigt(Components=None,SourceTables=None,partitionFunct
             if LineIntensity < IntensityThreshold: continue
             
             #   doppler broadening coefficient (GammaD)
-            GammaDDB = cSqrtLn2*LineCenterDB/cc*sqrt(2*cBolts*T/molecularMass(MoleculeNumberDB,IsoNumberDB))
-            GammaD = EnvironmentDependency_GammaD(GammaDDB,T,Tref)
+            # V1 >>>
+            #GammaDDB = cSqrtLn2*LineCenterDB/cc*sqrt(2*cBolts*T/molecularMass(MoleculeNumberDB,IsoNumberDB))
+            #GammaD = EnvironmentDependency_GammaD(GammaDDB,T,Tref)
+            # V2 >>>
+            cMassMol = 1.66053873e-27 # hapi
+            #cMassMol = 1.6605402e-27 # converter
+            m = molecularMass(MoleculeNumberDB,IsoNumberDB) * cMassMol * 1000
+            GammaD = sqrt(2*cBolts*T*log(2)/m/cc**2)*LineCenterDB
             
             #   lorentz broadening coefficient
             Gamma0 = EnvironmentDependency_Gamma0(Gamma0DB,T,Tref,p,pref,TempRatioPowerDB)
             
             #   get final wing of the line according to Gamma0, OmegaWingHW and OmegaWing
             # XXX min or max?
-            OmegaWingF = max(OmegaWing,OmegaWingHW*Gamma0)
-                       
+            OmegaWingF = max(OmegaWing,OmegaWingHW*Gamma0,OmegaWingHW*GammaD)
+
+            #   shift coefficient
+            Shift0 = Shift0DB*p/pref
+            
             # XXX other parameter (such as Delta0, Delta2, anuVC etc.) will be included in HTP version
             
             #PROFILE_VOIGT(sg0,GamD,Gam0,sg)
@@ -10202,7 +10278,7 @@ def absorptionCoefficient_Voigt(Components=None,SourceTables=None,partitionFunct
             # XXX time?
             BoundIndexLower = bisect(Omegas,LineCenterDB-OmegaWingF)
             BoundIndexUpper = bisect(Omegas,LineCenterDB+OmegaWingF)
-            lineshape_vals = PROFILE_VOIGT(LineCenterDB,GammaD,Gamma0,Omegas[BoundIndexLower:BoundIndexUpper])[0]
+            lineshape_vals = PROFILE_VOIGT(LineCenterDB+Shift0,GammaD,Gamma0,Omegas[BoundIndexLower:BoundIndexUpper])[0]
             Xsect[BoundIndexLower:BoundIndexUpper] += factor / NATURAL_ABUNDANCES[(MoleculeNumberDB,IsoNumberDB)] * \
                                                       ABUNDANCES[(MoleculeNumberDB,IsoNumberDB)] * \
                                                       LineIntensity * lineshape_vals
@@ -10218,8 +10294,8 @@ def absorptionCoefficient_Lorentz(Components=None,SourceTables=None,partitionFun
                                   OmegaWingHW=DefaultOmegaWingHW,
                                   ParameterBindings=DefaultParameterBindings,
                                   EnvironmentDependencyBindings=DefaultEnvironmentDependencyBindings,
-                                  GammaL='gamma_air', HITRAN_units=True,
-                                  File=None, Format='%e %e'):
+                                  GammaL='gamma_air', HITRAN_units=True, LineShift=True,
+                                  File=None, Format=None, OmegaGrid=None):
     """
     INPUT PARAMETERS: 
         Components:  list of tuples [(M,I,D)], where
@@ -10240,7 +10316,7 @@ def absorptionCoefficient_Lorentz(Components=None,SourceTables=None,partitionFun
         GammaL:  specifies broadening parameter ('gamma_air' or 'gamma_self')
         HITRAN_units:  use cm2/molecule (True) or cm-1 (False) for absorption coefficient
         File:   write output to file (if specified)
-        Format:  c format of file output ('%e %e' by default)
+        Format:  c-format of file output (accounts significant digits in OmegaStep)
     OUTPUT PARAMETERS: 
         Omegas: wavenumber grid with respect to parameters OmegaRange and OmegaStep
         Xsect: absorption coefficient calculated on the grid
@@ -10269,14 +10345,18 @@ def absorptionCoefficient_Lorentz(Components=None,SourceTables=None,partitionFun
     SourceTables = listOfTuples(SourceTables)
     
     # determine final input values
-    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,IntensityThreshold = \
+    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,\
+    IntensityThreshold,Format = \
        getDefaultValuesForXsect(Components,SourceTables,Environment,OmegaRange,
-                                OmegaStep,OmegaWing,IntensityThreshold)
+                                OmegaStep,OmegaWing,IntensityThreshold,Format)
                 
     # get uniform linespace for cross-section
     #number_of_points = (OmegaRange[1]-OmegaRange[0])/OmegaStep + 1
     #Omegas = linspace(OmegaRange[0],OmegaRange[1],number_of_points)
-    Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
+    if OmegaGrid is not None:
+        Omegas = npsort(OmegaGrid)
+    else:
+        Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
     number_of_points = len(Omegas)
     Xsect = zeros(number_of_points)
        
@@ -10297,7 +10377,10 @@ def absorptionCoefficient_Lorentz(Components=None,SourceTables=None,partitionFun
         if len(Component) >= 3:
             ni = Component[2]
         else:
-            ni = ISO[(M,I)][ISO_INDEX['abundance']]
+            try:
+                ni = ISO[(M,I)][ISO_INDEX['abundance']]
+            except KeyError:
+                raise Exception('cannot find component M,I = %d,%d.' % (M,I))
         ABUNDANCES[(M,I)] = ni
         NATURAL_ABUNDANCES[(M,I)] = ISO[(M,I)][ISO_INDEX['abundance']]
         
@@ -10327,8 +10410,12 @@ def absorptionCoefficient_Lorentz(Components=None,SourceTables=None,partitionFun
             Gamma0DB = LOCAL_TABLE_CACHE[TableName]['data'][GammaL][RowID]
             TempRatioPowerDB = LOCAL_TABLE_CACHE[TableName]['data']['n_air'][RowID]
             #TempRatioPowerDB = 1.0 # for planar molecules
-            
-            # filter by molecule and isotopologue
+            if LineShift:
+                Shift0DB = LOCAL_TABLE_CACHE[TableName]['data']['delta_air'][RowID]
+            else:
+                Shift0DB = 0
+
+                # filter by molecule and isotopologue
             if (MoleculeNumberDB,IsoNumberDB) not in ABUNDANCES: continue
             
             # partition functions for T and Tref
@@ -10352,6 +10439,9 @@ def absorptionCoefficient_Lorentz(Components=None,SourceTables=None,partitionFun
             #   get final wing of the line according to Gamma0, OmegaWingHW and OmegaWing
             # XXX min or max?
             OmegaWingF = max(OmegaWing,OmegaWingHW*Gamma0)
+
+            #   shift coefficient
+            Shift0 = Shift0DB*p/pref
                        
             # XXX other parameter (such as Delta0, Delta2, anuVC etc.) will be included in HTP version
             
@@ -10363,7 +10453,7 @@ def absorptionCoefficient_Lorentz(Components=None,SourceTables=None,partitionFun
             # XXX time?
             BoundIndexLower = bisect(Omegas,LineCenterDB-OmegaWingF)
             BoundIndexUpper = bisect(Omegas,LineCenterDB+OmegaWingF)
-            lineshape_vals = PROFILE_LORENTZ(LineCenterDB,Gamma0,Omegas[BoundIndexLower:BoundIndexUpper])
+            lineshape_vals = PROFILE_LORENTZ(LineCenterDB+Shift0,Gamma0,Omegas[BoundIndexLower:BoundIndexUpper])
             Xsect[BoundIndexLower:BoundIndexUpper] += factor / NATURAL_ABUNDANCES[(MoleculeNumberDB,IsoNumberDB)] * \
                                                       ABUNDANCES[(MoleculeNumberDB,IsoNumberDB)] * \
                                                       LineIntensity * lineshape_vals
@@ -10379,8 +10469,8 @@ def absorptionCoefficient_Doppler(Components=None,SourceTables=None,partitionFun
                                   OmegaWingHW=DefaultOmegaWingHW,
                                   ParameterBindings=DefaultParameterBindings,
                                   EnvironmentDependencyBindings=DefaultEnvironmentDependencyBindings,
-                                  GammaL='dummy', HITRAN_units=True,
-                                  File=None, Format='%e %e'):   
+                                  GammaL='dummy', HITRAN_units=True, LineShift=True,
+                                  File=None, Format=None, OmegaGrid=None):   
     """
     INPUT PARAMETERS: 
         Components:  list of tuples [(M,I,D)], where
@@ -10401,7 +10491,7 @@ def absorptionCoefficient_Doppler(Components=None,SourceTables=None,partitionFun
         GammaL:  specifies broadening parameter ('gamma_air' or 'gamma_self')
         HITRAN_units:  use cm2/molecule (True) or cm-1 (False) for absorption coefficient
         File:   write output to file (if specified)
-        Format:  c format of file output ('%e %e' by default)
+        Format:  c-format of file output (accounts significant digits in OmegaStep)
     OUTPUT PARAMETERS: 
         Omegas: wavenumber grid with respect to parameters OmegaRange and OmegaStep
         Xsect: absorption coefficient calculated on the grid
@@ -10430,16 +10520,20 @@ def absorptionCoefficient_Doppler(Components=None,SourceTables=None,partitionFun
     SourceTables = listOfTuples(SourceTables)
     
     # determine final input values
-    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,IntensityThreshold = \
+    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,\
+    IntensityThreshold,Format = \
        getDefaultValuesForXsect(Components,SourceTables,Environment,OmegaRange,
-                                OmegaStep,OmegaWing,IntensityThreshold)
+                                OmegaStep,OmegaWing,IntensityThreshold,Format)
     # special for Doppler case: set OmegaStep to a smaller value
     if not OmegaStep: OmegaStep = 0.001
                 
     # get uniform linespace for cross-section
     #number_of_points = (OmegaRange[1]-OmegaRange[0])/OmegaStep + 1
     #Omegas = linspace(OmegaRange[0],OmegaRange[1],number_of_points)
-    Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
+    if OmegaGrid is not None:
+        Omegas = npsort(OmegaGrid)
+    else:
+        Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
     number_of_points = len(Omegas)
     Xsect = zeros(number_of_points)
        
@@ -10460,7 +10554,10 @@ def absorptionCoefficient_Doppler(Components=None,SourceTables=None,partitionFun
         if len(Component) >= 3:
             ni = Component[2]
         else:
-            ni = ISO[(M,I)][ISO_INDEX['abundance']]
+            try:
+                ni = ISO[(M,I)][ISO_INDEX['abundance']]
+            except KeyError:
+                raise Exception('cannot find component M,I = %d,%d.' % (M,I))
         ABUNDANCES[(M,I)] = ni
         NATURAL_ABUNDANCES[(M,I)] = ISO[(M,I)][ISO_INDEX['abundance']]
         
@@ -10485,6 +10582,10 @@ def absorptionCoefficient_Doppler(Components=None,SourceTables=None,partitionFun
             LowerStateEnergyDB = LOCAL_TABLE_CACHE[TableName]['data']['elower'][RowID]
             MoleculeNumberDB = LOCAL_TABLE_CACHE[TableName]['data']['molec_id'][RowID]
             IsoNumberDB = LOCAL_TABLE_CACHE[TableName]['data']['local_iso_id'][RowID]
+            if LineShift:
+                Shift0DB = LOCAL_TABLE_CACHE[TableName]['data']['delta_air'][RowID]
+            else:
+                Shift0DB = 0
             
             # filter by molecule and isotopologue
             if (MoleculeNumberDB,IsoNumberDB) not in ABUNDANCES: continue
@@ -10528,7 +10629,10 @@ def absorptionCoefficient_Doppler(Components=None,SourceTables=None,partitionFun
             #   get final wing of the line according to GammaD, OmegaWingHW and OmegaWing
             # XXX min or max?
             OmegaWingF = max(OmegaWing,OmegaWingHW*GammaD)
-                       
+
+            #   shift coefficient
+            Shift0 = Shift0DB*p/pref
+
             # XXX other parameter (such as Delta0, Delta2, anuVC etc.) will be included in HTP version
             
             #PROFILE_VOIGT(sg0,GamD,Gam0,sg)
@@ -10540,7 +10644,7 @@ def absorptionCoefficient_Doppler(Components=None,SourceTables=None,partitionFun
             # XXX time?
             BoundIndexLower = bisect(Omegas,LineCenterDB-OmegaWingF)
             BoundIndexUpper = bisect(Omegas,LineCenterDB+OmegaWingF)
-            lineshape_vals = PROFILE_DOPPLER(LineCenterDB,GammaD,Omegas[BoundIndexLower:BoundIndexUpper])
+            lineshape_vals = PROFILE_DOPPLER(LineCenterDB+Shift0,GammaD,Omegas[BoundIndexLower:BoundIndexUpper])
             #lineshape_vals = PROFILE_VOIGT(LineCenterDB,GammaD,cZero,Omegas[BoundIndexLower:BoundIndexUpper])[0]
             #Xsect[BoundIndexLower:BoundIndexUpper] += lineshape_vals # DEBUG
             Xsect[BoundIndexLower:BoundIndexUpper] += factor / NATURAL_ABUNDANCES[(MoleculeNumberDB,IsoNumberDB)] * \
@@ -10550,6 +10654,31 @@ def absorptionCoefficient_Doppler(Components=None,SourceTables=None,partitionFun
     if File: save_to_file(File,Format,Omegas,Xsect)
     return Omegas,Xsect
 
+# ---------------------------------------------------------------------------
+# SHORTCUTS AND ALIASES FOR ABSORPTION COEFFICIENTS
+# ---------------------------------------------------------------------------
+
+absorptionCoefficient_Gauss = absorptionCoefficient_Doppler
+
+def abscoef_HT(table=None,step=None,grid=None,env={'T':296.,'p':1.},file=None):
+    return absorptionCoefficient_HT(SourceTables=table,OmegaStep=step,OmegaGrid=grid,Environment=env,File=file)
+
+def abscoef_Voigt(table=None,step=None,grid=None,env={'T':296.,'p':1.},file=None):
+    return absorptionCoefficient_Voigt(SourceTables=table,OmegaStep=step,OmegaGrid=grid,Environment=env,File=file)
+    
+def abscoef_Lorentz(table=None,step=None,grid=None,env={'T':296.,'p':1.},file=None):
+    return absorptionCoefficient_Lorentz(SourceTables=table,OmegaStep=step,OmegaGrid=grid,Environment=env,File=file)
+
+def abscoef_Doppler(table=None,step=None,grid=None,env={'T':296.,'p':1.},file=None):
+    return absorptionCoefficient_Doppler(SourceTables=table,OmegaStep=step,OmegaGrid=grid,Environment=env,File=file)
+
+abscoef_Gauss = abscoef_Doppler
+    
+def abscoef(table=None,step=None,grid=None,env={'T':296.,'p':1.},file=None): # default
+    return absorptionCoefficient_Lorentz(SourceTables=table,OmegaStep=step,OmegaGrid=grid,Environment=env,File=file)
+    
+# ---------------------------------------------------------------------------
+    
 def transmittanceSpectrum(Omegas,AbsorptionCoefficient,Environment={'l':100.},
                           File=None, Format='%e %e'):
     """
@@ -10675,7 +10804,10 @@ def getStickXY(TableName):
 
 def read_hotw(filename):
     """
-    Read datafile fetched from HITRAN-on-the-Web.
+    Read cross-section file fetched from HITRAN-on-the-Web.
+    The format of the file line must be as follows: 
+      nu, coef
+    Other lines are omitted.
     """
     import sys
     f = open(filename,'r')
@@ -10693,6 +10825,9 @@ def read_hotw(filename):
                 pass    
     return array(nu),array(coef)
 
+# alias for read_hotw for backwards compatibility
+read_xsect = read_hotw
+    
 # /----------------------------------------------------------------------------
 
 # ------------------  SPECTRAL CONVOLUTION -------------------------
@@ -10730,7 +10865,7 @@ def SLIT_GAUSSIAN(x,g):
     """
     Instrumental (slit) function.
     B(x) = sqrt(ln(2)/pi)/γ*exp(-ln(2)*(x/γ)**2),
-    where γ is a gaussian halfwidth within 3-sigma rule.
+    where γ/2 is a gaussian half-width at half-maximum.
     """
     g /= 2
     return sqrt(log(2))/(sqrt(pi)*g)*exp(-log(2)*(x/g)**2)
@@ -10739,8 +10874,8 @@ def SLIT_GAUSSIAN(x,g):
 def SLIT_DISPERSION(x,g):
     """
     Instrumental (slit) function.
-    B(x) = 1/pi * γ/2/(x**2 + (γ/2)**2),
-    where γ is a halfwidth of a Lorentz profile.
+    B(x) = γ/pi/(x**2+γ**2),
+    where γ/2 is a lorentzian half-width at half-maximum.
     """
     g /= 2
     return g/pi/(x**2+g**2)
@@ -10857,159 +10992,4 @@ def convolveSpectrumFull(Omega,CrossSection,Resolution=0.1,AF_wing=10.,SlitFunct
     CrossSectionLowRes = convolve(CrossSection,slit,mode='full')*step
     return Omega,CrossSectionLowRes,None,None
 
-# ------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-# ---------------------------SANDBOX--------------------------------
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-
-# calculate apsorption for Lorentz profile broadened by N2 (TEMPORARY SOLUTION)
-def absorptionCoefficient_Lorentz_N2BROAD(Components=None,SourceTables=None,partitionFunction=PYTIPS,
-                                          Environment=None,OmegaRange=None,OmegaStep=None,OmegaWing=None,
-                                          IntensityThreshold=DefaultIntensityThreshold,
-                                          OmegaWingHW=DefaultOmegaWingHW,
-                                          ParameterBindings=DefaultParameterBindings,
-                                          EnvironmentDependencyBindings=DefaultEnvironmentDependencyBindings,
-                                          GammaL='gamma_air', HITRAN_units=True,
-                                          File=None, Format='%e %e'):
-    """
-    N2-BROADENED ABSORPTION COEFFICIENT / LORENTZ PROFILE / TEMPORARY SOLUTION
-    """
-
-    # warn user about too large omega step
-    if OmegaStep>0.1: warn('Too small omega step: possible accuracy decline')
-
-    # "bug" with 1-element list
-    Components = listOfTuples(Components)
-    SourceTables = listOfTuples(SourceTables)
-    
-    # determine final input values
-    Components,SourceTables,Environment,OmegaRange,OmegaStep,OmegaWing,IntensityThreshold = \
-       getDefaultValuesForXsect(Components,SourceTables,Environment,OmegaRange,
-                                OmegaStep,OmegaWing,IntensityThreshold)
-                
-    # get uniform linespace for cross-section
-    #number_of_points = (OmegaRange[1]-OmegaRange[0])/OmegaStep + 1
-    #Omegas = linspace(OmegaRange[0],OmegaRange[1],number_of_points)
-    Omegas = arange(OmegaRange[0],OmegaRange[1],OmegaStep)
-    number_of_points = len(Omegas)
-    Xsect = zeros(number_of_points)
-       
-    # reference temperature and pressure
-    Tref = __FloatType__(296.) # K
-    pref = __FloatType__(1.) # atm
-    
-    # actual temperature and pressure
-    T = Environment['T'] # K
-    p = Environment['p'] # atm
-       
-    # create dictionary from Components
-    ABUNDANCES = {}
-    NATURAL_ABUNDANCES = {}
-    for Component in Components:
-        M = Component[0]
-        I = Component[1]
-        if len(Component) >= 3:
-            ni = Component[2]
-        else:
-            ni = ISO[(M,I)][ISO_INDEX['abundance']]
-        ABUNDANCES[(M,I)] = ni
-        NATURAL_ABUNDANCES[(M,I)] = ISO[(M,I)][ISO_INDEX['abundance']]
-        
-    # precalculation of volume concentration
-    if HITRAN_units:
-        factor = __FloatType__(1.0)
-    else:
-        factor = volumeConcentration(p,T) 
-        
-    # SourceTables contain multiple tables
-    for TableName in SourceTables:
-
-        # get line centers
-        nline = LOCAL_TABLE_CACHE[TableName]['header']['number_of_rows']
-        
-        # loop through line centers (single stream)
-        for RowID in range(nline):
-            
-            # get basic line parameters (lower level)
-            LineCenterDB = LOCAL_TABLE_CACHE[TableName]['data']['nu'][RowID]
-            LineIntensityDB = LOCAL_TABLE_CACHE[TableName]['data']['sw'][RowID]
-            LowerStateEnergyDB = LOCAL_TABLE_CACHE[TableName]['data']['elower'][RowID]
-            MoleculeNumberDB = LOCAL_TABLE_CACHE[TableName]['data']['molec_id'][RowID]
-            IsoNumberDB = LOCAL_TABLE_CACHE[TableName]['data']['local_iso_id'][RowID]
-            #Gamma0DB = LOCAL_TABLE_CACHE[TableName]['data']['gamma_air'][RowID]
-            #Gamma0DB = LOCAL_TABLE_CACHE[TableName]['data']['gamma_self'][RowID]
-            Gamma0DB = LOCAL_TABLE_CACHE[TableName]['data']['gamma_air'][RowID] / 0.9
-            TempRatioPowerDB = LOCAL_TABLE_CACHE[TableName]['data']['n_air'][RowID]
-            #TempRatioPowerDB = 1.0 # for planar molecules
-            
-            # filter by molecule and isotopologue
-            if (MoleculeNumberDB,IsoNumberDB) not in ABUNDANCES: continue
-            
-            # partition functions for T and Tref
-            # TODO: optimize
-            SigmaT = partitionFunction(MoleculeNumberDB,IsoNumberDB,T)
-            SigmaTref = partitionFunction(MoleculeNumberDB,IsoNumberDB,Tref)
-            
-            # get all environment dependences from voigt parameters
-            
-            #   intensity
-            LineIntensity = EnvironmentDependency_Intensity(LineIntensityDB,T,Tref,SigmaT,SigmaTref,
-                                                            LowerStateEnergyDB,LineCenterDB)
-            
-            #   FILTER by LineIntensity: compare it with IntencityThreshold
-            # TODO: apply wing narrowing instead of filtering, this would be more appropriate
-            if LineIntensity < IntensityThreshold: continue
-                       
-            #   lorentz broadening coefficient
-            Gamma0 = EnvironmentDependency_Gamma0(Gamma0DB,T,Tref,p,pref,TempRatioPowerDB)
-            
-            #   get final wing of the line according to Gamma0, OmegaWingHW and OmegaWing
-            # XXX min or max?
-            OmegaWingF = max(OmegaWing,OmegaWingHW*Gamma0)
-                       
-            # XXX other parameter (such as Delta0, Delta2, anuVC etc.) will be included in HTP version
-            
-            #PROFILE_VOIGT(sg0,GamD,Gam0,sg)
-            #      sg0           : Unperturbed line position in cm-1 (Input).
-            #      GamD          : Doppler HWHM in cm-1 (Input)
-            #      Gam0          : Speed-averaged line-width in cm-1 (Input).
-            #      sg            : Current WaveNumber of the Computation in cm-1 (Input).
-            
-            # XXX time?
-            BoundIndexLower = bisect(Omegas,LineCenterDB-OmegaWingF)
-            BoundIndexUpper = bisect(Omegas,LineCenterDB+OmegaWingF)
-            lineshape_vals = PROFILE_LORENTZ(LineCenterDB,Gamma0,Omegas[BoundIndexLower:BoundIndexUpper])
-            Xsect[BoundIndexLower:BoundIndexUpper] += factor / NATURAL_ABUNDANCES[(MoleculeNumberDB,IsoNumberDB)] * \
-                                                      ABUNDANCES[(MoleculeNumberDB,IsoNumberDB)] * \
-                                                      LineIntensity * lineshape_vals
-            
-    if File: save_to_file(File,Format,Omegas,Xsect)
-    return Omegas,Xsect
-
-    
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-# ---------------------------/SANDBOX-------------------------------
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
 # ------------------------------------------------------------------
