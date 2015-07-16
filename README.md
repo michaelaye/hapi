@@ -16,3 +16,9 @@ to add it to their environment.
 ## Some comments on code
 
 * The delivered `hapi.py` module contains everything, but for a proper setup script functionality I need to distinguish between project name and package name. To avoid import chaos, I do an `from hapi import *` inside the `__init__.py` script
+
+## Installation
+
+* `git clone git@github.com:michaelaye/hapi.git`
+* `cd hapi`
+* `python setup.py install`
